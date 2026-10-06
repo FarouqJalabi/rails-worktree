@@ -2,20 +2,19 @@ require "fileutils"
 
 module RailsWorktree
   module Commands
+    # Creates a worktree under .worktrees/ from an explicit base, then provisions it.
     class Create
-      def initialize(args, skip_seeds: false)
+      def initialize(args, level: nil, seed: false, force: false, skip_seeds: nil)
         @worktree_name = args[0]
         @base_branch = args[1]
-        @skip_seeds = skip_seeds
+        @level = level
+        @seed = seed
       end
 
       def run
-        unless @worktree_name
-          puts "Error: Worktree name is required"
-          exit 1
-        end
+        raise Error, "Worktree name is required: bin/worktree create NAME BASE" unless @worktree_name
+        raise Error, "Base branch required: bin/worktree create #{@worktree_name} BASE (for example origin/main)." unless @base_branch
 
-        raise Error, "Base branch required: bin/worktree #{@worktree_name} BASE (for example origin/main)." unless @base_branch
         context = Context.new
         Dir.chdir(context.root) { create }
       end
@@ -37,32 +36,18 @@ module RailsWorktree
         Installer.ignore_worktrees(Dir.pwd)
         FileUtils.mkdir_p(worktree_dir)
 
-        puts "Creating worktree '#{@worktree_name}' from branch '#{@base_branch}' at #{worktree_path}..."
-
+        puts "Creating worktree '#{@worktree_name}' from #{@base_branch} at #{worktree_path}..."
         unless system(Context::GIT_ENVIRONMENT, "git", "worktree", "add", "-b", @worktree_name, worktree_path, base_commit)
-          puts "Failed to create worktree"
-          exit 1
+          raise Error, "Failed to create worktree"
         end
 
-        puts ""
-        puts "✓ Worktree created at #{worktree_path}"
-        puts ""
-        puts "Initializing worktree..."
-
         Dir.chdir(worktree_path) do
-          created = Context.new
-          created.record(@base_branch, base_commit, @worktree_name)
-          created.verify
-          Installer.install(created.root, replace: true)
-          PushHook.install(created.root)
-          Init.new([@worktree_name], skip_seeds: @skip_seeds).run
+          Init.new([@worktree_name], level: @level, seed: @seed, base: @base_branch).run
         end
 
         puts ""
         puts "To switch to the new worktree:"
         puts "  cd #{absolute_path}"
-        puts ""
-        puts "To start the development server: bin/dev"
       end
     end
   end

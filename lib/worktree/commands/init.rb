@@ -2,180 +2,195 @@ require "fileutils"
 
 module RailsWorktree
   module Commands
+    # Provisions the current checkout at a level: minimal (configuration files),
+    # test (minimal plus an isolated test setup) or full (minimal plus own
+    # development and test databases). Safe to repeat.
     class Init
-      def initialize(args, skip_seeds: false)
-        @worktree_name = args[0]
-        @skip_seeds = skip_seeds
+      ENV_FILES = {"development" => ".env.development.local", "test" => ".env.test.local"}.freeze
+
+      attr_reader :root, :main_worktree, :name, :level
+
+      def initialize(args, level: nil, seed: false, base: nil, force: false, skip_seeds: nil)
+        @requested_name = args[0]
+        @requested_level = level
+        @seed = seed
+        @base = base
+        @force = force
       end
 
       def run
-        unless @worktree_name
-          puts "Error: Worktree name is required"
-          puts "Usage: worktree --init <worktree-name>"
-          exit 1
-        end
-
-        @main_worktree = get_main_worktree
-        @db_prefix = get_db_prefix
-        @dev_database_name = "#{@db_prefix}_#{@worktree_name}_development"
-        @test_database_name = "#{@db_prefix}_#{@worktree_name}_test"
-
-        puts "Initializing worktree '#{@worktree_name}'..."
-        puts "Main worktree: #{@main_worktree}"
-        puts "Development database: #{@dev_database_name}"
-        puts "Test database: #{@test_database_name}"
-
         @context = Context.new
-        @context_environment = @context.environment
+        @root = @context.root
+        @main_worktree = main_worktree_path
+        raise Error, "Run init inside a linked worktree, not the main checkout #{@main_worktree}." if @root == @main_worktree
 
-        copy_config_files
-        set_database_names
-        update_database_yml
-        copy_node_modules
-        setup_database
+        @config = Config.load(File.exist?(File.join(@root, Config::FILE)) ? @root : @main_worktree)
+        @name = @requested_name || File.basename(@root)
+        @level = @requested_level || @config.level
+        raise Error, "Unknown level #{@level}; use #{Config::LEVELS.join(", ")}." unless Config::LEVELS.include?(@level)
 
-        puts ""
-        puts "✓ Worktree initialized successfully!"
-        puts "  Development database: #{@dev_database_name}"
-        puts "  Test database: #{@test_database_name}"
-        puts "  Configuration files copied"
+        puts "Provisioning #{@root} (#{@level}) from #{@main_worktree}"
+        Dir.chdir(@root) do
+          record_base if @base
+          copy_files
+          create_directories
+          touch_files
+          link_node_modules
+          case @level
+          when "test" then setup_test
+          when "full" then setup_databases
+          end
+        end
+        puts "✓ Worktree #{@name} provisioned (#{@level})"
       end
+
+      def development_database = "#{database_prefix}_#{database_slug}_development"
+      def test_database = "#{database_prefix}_#{database_slug}_test"
 
       private
 
-      def get_main_worktree
-        output = `git worktree list --porcelain`
-        output.lines.grep(/^worktree /).first&.split(" ", 2)&.last&.strip
+      def main_worktree_path
+        output = @context.git(@root, "worktree", "list", "--porcelain")
+        File.realpath(output.lines.grep(/^worktree /).first.delete_prefix("worktree ").strip)
       end
 
-      def get_db_prefix
-        # Try to get prefix from database.yml first
-        database_yml = File.join(@main_worktree, "config/database.yml")
-        if File.exist?(database_yml)
-          content = File.read(database_yml)
-          match = content.match(/database:\s*(\w+)_development/)
-          return match[1] if match
-        end
-
-        # Fall back to using the Rails app name (directory name of main worktree)
-        File.basename(@main_worktree)
+      def record_base
+        output, error, status = Open3.capture3(Context::GIT_ENVIRONMENT, "git", "-C", @root, "rev-parse", "--verify", "--end-of-options", "#{@base}^{commit}")
+        raise Error, "Invalid base #{@base}: #{error.strip}" unless status.success?
+        branch = @context.git(@root, "branch", "--show-current").strip
+        raise Error, "Cannot record a base on a detached HEAD." if branch.empty?
+        @context.record(@base, output.strip, branch)
+        @context.verify
+        Launcher.install(@root, replace: true)
+        PushHook.install(@root)
+        puts "Recorded base #{@base} for branch #{branch}"
       end
 
-      def copy_config_files
-        puts "Copying configuration files..."
+      def copy_files
+        @config.copy_patterns.each do |pattern|
+          Dir.glob(pattern, base: @main_worktree).sort.each do |relative|
+            source = File.join(@main_worktree, relative)
+            next unless File.file?(source)
+            next if File.exist?(relative) && !@force
 
-        files_to_copy = [
-          ".env",
-          "config/database.yml",
-          "Procfile.dev",
-          "config/master.key"
-        ]
-
-        files_to_copy += Dir.glob("config/credentials/*", base: @main_worktree)
-
-        files_to_copy.each do |file|
-          source = File.join(@main_worktree, file)
-          if File.exist?(source)
-            FileUtils.mkdir_p(File.dirname(file)) unless File.directory?(File.dirname(file))
-            FileUtils.cp(source, file)
-          else
-            puts "Warning: #{file} not found, skipping"
+            FileUtils.mkdir_p(File.dirname(relative))
+            FileUtils.cp(source, relative)
+            puts "  copied #{relative}"
           end
         end
       end
 
-      def set_database_names
-        puts "Setting database names in .env..."
-
-        env_file = ".env"
-        return unless File.exist?(env_file)
-
-        content = File.read(env_file)
-
-        # Set development database name
-        if content.match?(/^DATABASE_NAME_DEVELOPMENT=/)
-          content.gsub!(/^DATABASE_NAME_DEVELOPMENT=.*$/, "DATABASE_NAME_DEVELOPMENT=#{@dev_database_name}")
-        else
-          content += "\nDATABASE_NAME_DEVELOPMENT=#{@dev_database_name}\n"
-        end
-
-        # Set test database name
-        if content.match?(/^DATABASE_NAME_TEST=/)
-          content.gsub!(/^DATABASE_NAME_TEST=.*$/, "DATABASE_NAME_TEST=#{@test_database_name}")
-        else
-          content += "DATABASE_NAME_TEST=#{@test_database_name}\n"
-        end
-
-        File.write(env_file, content)
+      def create_directories
+        @config.directories.each { |directory| FileUtils.mkdir_p(directory) }
       end
 
-      def update_database_yml
-        puts "Updating database.yml to use separate database names..."
-
-        database_yml = "config/database.yml"
-        return unless File.exist?(database_yml)
-
-        content = File.read(database_yml)
-
-        # Use a single-pass replacement to avoid one substitution creating
-        # a substring that matches the other pattern (e.g., replacing
-        # "app_development" first produces "app_test-branch_development",
-        # which contains "app_test" and would be wrongly matched by a
-        # second gsub for the test pattern).
-        replacements = {
-          "#{@db_prefix}_development" => @dev_database_name,
-          "#{@db_prefix}_test" => @test_database_name
-        }
-        pattern = Regexp.union(replacements.keys)
-        content.gsub!(pattern) { |match| replacements[match] }
-
-        File.write(database_yml, content)
+      def touch_files
+        @config.touch.each do |file|
+          FileUtils.mkdir_p(File.dirname(file))
+          FileUtils.touch(file)
+        end
       end
 
-      def copy_node_modules
+      def link_node_modules
         source = File.join(@main_worktree, "node_modules")
-        dest = "node_modules"
+        return if @config.node_modules == "skip" || !Dir.exist?(source) || File.exist?("node_modules") || File.symlink?("node_modules")
 
-        if Dir.exist?(source) && !Dir.exist?(dest)
-          puts "Copying node_modules from main worktree..."
-          FileUtils.cp_r(source, dest)
-          puts "Note: node_modules copied."
+        if @config.node_modules == "link"
+          File.symlink(source, "node_modules")
+          puts "  linked node_modules to the main checkout"
+        else
+          FileUtils.cp_r(source, "node_modules")
+          puts "  copied node_modules"
         end
       end
 
-      def database_env
-        (@context_environment || {}).merge(
-          "BUNDLE_GEMFILE" => File.expand_path("Gemfile"),
-          "DATABASE_NAME_DEVELOPMENT" => @dev_database_name,
-          "DATABASE_NAME_TEST" => @test_database_name
-        )
+      def setup_test
+        if @config.test_command
+          puts "Running #{@config.test_command}..."
+          run_command(@context.environment, *@config.test_command.split(" ")) || raise(Error, "#{@config.test_command} failed")
+        else
+          write_env_file("test", test_database)
+          prepare_schema("test", test_database)
+        end
+      end
+
+      def setup_databases
+        unless File.executable?("bin/rails")
+          puts "Warning: bin/rails not found; skipping database setup"
+          return
+        end
+
+        cloned = @config.template? && clone_development_database
+        write_env_file("development", development_database)
+        write_env_file("test", test_database)
+        if cloned
+          rails("development", development_database, "db:migrate") || puts("Warning: migrations failed")
+        else
+          prepare_schema("development", development_database)
+        end
+        prepare_schema("test", test_database)
+        return unless @seed
+
+        puts "Seeding #{development_database}..."
+        rails("development", development_database, "db:seed") || puts("Warning: seeding failed")
+      end
+
+      # Runs without the worktree database override so the configured development
+      # database is the main checkout's, then clones it. Returns false on failure.
+      def clone_development_database
+        return false if File.exist?(ENV_FILES["development"]) && !@force
+
+        puts "Cloning the development database into #{development_database}..."
+        script = File.expand_path("../clone_database.rb", __dir__)
+        return true if run_command(@context.environment.merge("RAILS_ENV" => "development"), "bin/rails", "runner", script, development_database)
+
+        puts "Warning: template clone failed (is the main development database in use?); loading the schema instead"
+        false
+      end
+
+      def prepare_schema(environment, database)
+        return unless File.executable?("bin/rails")
+
+        puts "Preparing #{database}..."
+        rails(environment, database, "db:create") || puts("Warning: could not create #{database}")
+        rails(environment, database, "db:schema:load") || puts("Warning: could not load the schema into #{database}")
+      end
+
+      def write_env_file(environment, database)
+        variable = environment == "test" ? @config.test_variable : @config.development_variable
+        path = ENV_FILES.fetch(environment)
+        content = File.exist?(path) ? File.read(path) : "# Written by bin/worktree init; dotenv loads it in the #{environment} environment only.\n"
+        line = "#{variable}=#{database}"
+        if content.match?(/^#{Regexp.escape(variable)}=/)
+          content = content.gsub(/^#{Regexp.escape(variable)}=.*$/, line)
+        else
+          content += "\n" unless content.end_with?("\n")
+          content += "#{line}\n"
+        end
+        File.write(path, content)
+      end
+
+      def rails(environment, database, *arguments)
+        variable = environment == "test" ? @config.test_variable : @config.development_variable
+        env = @context.environment.merge("RAILS_ENV" => environment, variable => database, "DISABLE_DATABASE_ENVIRONMENT_CHECK" => "1")
+        run_command(env, "bin/rails", *arguments)
       end
 
       def run_command(environment, *arguments)
-        command = @context ? @context.command(arguments) : arguments
-        system(environment, *command, unsetenv_others: !!@context_environment)
+        command = @context.command(arguments)
+        system(environment, *command, unsetenv_others: true)
       end
 
-      def setup_database
-        if File.executable?("bin/setup")
-          puts "Running bin/setup..."
-          run_command(database_env, "bin/setup") || puts("Warning: bin/setup failed")
-        else
-          puts "Creating databases..."
-          run_command(database_env.merge("RAILS_ENV" => "development"), "bin/rails", "db:create") || puts("Warning: Could not create development database")
-          run_command(database_env.merge("RAILS_ENV" => "test"), "bin/rails", "db:create") || puts("Warning: Could not create test database")
-
-          puts "Running migrations..."
-          run_command(database_env.merge("RAILS_ENV" => "development"), "bin/rails", "db:migrate") || puts("Warning: Could not run migrations")
-          run_command(database_env.merge("RAILS_ENV" => "test"), "bin/rails", "db:migrate") || puts("Warning: Could not run test migrations")
-
-          unless @skip_seeds
-            puts "Seeding development database..."
-            run_command(database_env.merge("RAILS_ENV" => "development"), "bin/rails", "db:seed") || puts("Warning: Could not seed database")
-          else
-            puts "Skipping database seeding..."
-          end
+      def database_prefix
+        @database_prefix ||= begin
+          database_yml = File.join(@main_worktree, "config/database.yml")
+          match = File.exist?(database_yml) && File.read(database_yml).match(/(\w+)_development\b/)
+          match ? match[1] : File.basename(@main_worktree).gsub(/[^A-Za-z0-9_]/, "_")
         end
+      end
+
+      def database_slug
+        @name.gsub(/[^A-Za-z0-9_]/, "_")
       end
     end
   end

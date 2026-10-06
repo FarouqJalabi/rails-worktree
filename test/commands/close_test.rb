@@ -1,128 +1,96 @@
 require "test_helper"
 
 class CloseTest < Minitest::Test
+  include RepositoryFixture
+
   def setup
-    @tmpdir = Dir.mktmpdir
-    @main_worktree = File.join(@tmpdir, "main")
-    FileUtils.mkdir_p(@main_worktree)
+    build_repository
+    write_main("bin/rails", "#!/bin/sh\n")
+    FileUtils.cp_r(File.join(@main, "bin"), @worktree)
+    File.chmod(0755, File.join(@worktree, "bin/rails"))
   end
 
   def teardown
-    FileUtils.rm_rf(@tmpdir)
+    FileUtils.remove_entry(@directory)
   end
 
-  # --- drop_databases ---
-
-  def test_drop_databases_uses_rails_db_drop
-    close = build_close("my-feature", db_prefix: "myapp")
-
-    system_calls = []
-    close.define_singleton_method(:system) do |*args|
-      system_calls << args
-      true
-    end
-
-    # Create a fake bin/rails in the worktree path
-    worktree_path = close.instance_variable_get(:@worktree_path)
-    FileUtils.mkdir_p(File.join(worktree_path, "bin"))
-    bin_rails = File.join(worktree_path, "bin/rails")
-    File.write(bin_rails, "#!/bin/bash\n")
-    File.chmod(0755, bin_rails)
+  def test_drops_only_the_databases_recorded_in_the_local_env_files
+    File.write(File.join(@worktree, ".env.development.local"), "# generated\nDATABASE_NAME=myapp_feature_x_development\n")
+    File.write(File.join(@worktree, ".env.test.local"), "DATABASE_NAME=myapp_feature_x_test\n")
+    close = build_close
 
     close.send(:drop_databases)
 
-    assert_equal 1, system_calls.length
-    env, cmd, arg = system_calls[0]
-    assert_equal "1", env["DISABLE_DATABASE_ENVIRONMENT_CHECK"]
-    assert_equal "bin/rails", cmd
-    assert_equal "db:drop", arg
-  end
-
-  def test_drop_databases_warns_on_failure
-    close = build_close("my-feature")
-
-    close.define_singleton_method(:system) do |*args|
-      false
+    assert_equal [["development", "myapp_feature_x_development"], ["test", "myapp_feature_x_test"]],
+      close.calls.map { |env, *| [env["RAILS_ENV"], env["DATABASE_NAME"]] }
+    close.calls.each do |env, command, task|
+      assert_equal "1", env["DISABLE_DATABASE_ENVIRONMENT_CHECK"]
+      assert_equal ["bin/rails", "db:drop"], [command, task]
     end
-
-    worktree_path = close.instance_variable_get(:@worktree_path)
-    FileUtils.mkdir_p(File.join(worktree_path, "bin"))
-    bin_rails = File.join(worktree_path, "bin/rails")
-    File.write(bin_rails, "#!/bin/bash\n")
-    File.chmod(0755, bin_rails)
-
-    output = capture_io { close.send(:drop_databases) }.first
-
-    assert_includes output, "Warning: Could not drop databases"
   end
 
-  def test_drop_databases_warns_when_no_bin_rails
-    close = build_close("my-feature")
+  def test_uses_the_configured_variables
+    write_main(".worktree.yml", "database:\n  development_variable: DATABASE_NAME_DEVELOPMENT\n  test_variable: DATABASE_NAME_TEST\n")
+    File.write(File.join(@worktree, ".env.development.local"), "DATABASE_NAME_DEVELOPMENT=myapp_feature_x_development\n")
+    File.write(File.join(@worktree, ".env.test.local"), "DATABASE_NAME=ignored\n")
+    close = build_close
 
-    worktree_path = close.instance_variable_get(:@worktree_path)
-    FileUtils.mkdir_p(worktree_path)
+    close.send(:drop_databases)
 
-    output = capture_io { close.send(:drop_databases) }.first
-
-    assert_includes output, "Warning: bin/rails not found"
+    assert_equal [["development", "myapp_feature_x_development"]], close.calls.map { |env, *| [env["RAILS_ENV"], env["DATABASE_NAME_DEVELOPMENT"]] }
   end
 
-  # --- database name computation ---
-
-  def test_database_names_use_prefix_and_worktree_name
-    close = build_close("logging", db_prefix: "myapp")
-
-    assert_equal "myapp_logging_development", close.instance_variable_get(:@dev_database_name)
-    assert_equal "myapp_logging_test", close.instance_variable_get(:@test_database_name)
+  def test_leaves_shared_databases_alone_without_local_env_files
+    close = build_close
+    _out, _err = capture_io { close.send(:drop_databases) }
+    assert_empty close.calls
   end
 
-  def test_database_names_with_hyphenated_worktree
-    close = build_close("my-cool-feature", db_prefix: "myapp")
-
-    assert_equal "myapp_my-cool-feature_development", close.instance_variable_get(:@dev_database_name)
-    assert_equal "myapp_my-cool-feature_test", close.instance_variable_get(:@test_database_name)
+  def test_skips_the_drop_without_bin_rails
+    File.delete(File.join(@worktree, "bin/rails"))
+    File.write(File.join(@worktree, ".env.development.local"), "DATABASE_NAME=myapp_feature_x_development\n")
+    close = build_close
+    out, _err = capture_io { close.send(:drop_databases) }
+    assert_includes out, "skipping database drop"
+    assert_empty close.calls
   end
 
-  # --- get_db_prefix ---
+  def test_removes_a_node_modules_symlink_without_touching_the_target
+    write_main("node_modules/left-pad/index.js", "1")
+    File.symlink(File.join(@main, "node_modules"), File.join(@worktree, "node_modules"))
+    close = build_close
 
-  def test_get_db_prefix_from_database_yml
-    FileUtils.mkdir_p(File.join(@main_worktree, "config"))
-    File.write(File.join(@main_worktree, "config/database.yml"), <<~YAML)
-      development:
-        database: valinor_development
-    YAML
+    capture_io { close.send(:remove_node_modules) }
 
-    close = build_close("logging")
-
-    assert_equal "valinor", close.instance_variable_get(:@db_prefix)
-    assert_equal "valinor_logging_development", close.instance_variable_get(:@dev_database_name)
-    assert_equal "valinor_logging_test", close.instance_variable_get(:@test_database_name)
+    refute File.symlink?(File.join(@worktree, "node_modules"))
+    assert File.file?(File.join(@main, "node_modules/left-pad/index.js"))
   end
 
-  def test_get_db_prefix_falls_back_to_directory_name
-    close = build_close("logging")
+  def test_close_from_within_the_worktree_removes_checkout_and_branch
+    Dir.chdir(@worktree) { capture_io { RailsWorktree::Commands::Close.new([]).run } }
 
-    assert_equal "main", close.instance_variable_get(:@db_prefix)
+    refute Dir.exist?(@worktree)
+    refute_includes git(@main, "branch", "--list", "feature-x"), "feature-x"
+  end
+
+  def test_close_from_the_main_checkout_requires_a_name
+    Dir.chdir(@main) { assert_raises(RailsWorktree::Error) { RailsWorktree::Commands::Close.new([]).run } }
+    Dir.chdir(@main) { capture_io { RailsWorktree::Commands::Close.new(["feature-x"]).run } }
+    refute Dir.exist?(@worktree)
   end
 
   private
 
-  def build_close(worktree_name, db_prefix: nil)
-    close = RailsWorktree::Commands::Close.allocate
-
-    # Stub git/filesystem dependencies
-    close.instance_variable_set(:@worktree_name, worktree_name)
-    close.instance_variable_set(:@main_worktree, @main_worktree)
-    close.instance_variable_set(:@current_dir, @main_worktree)
-
-    # Compute db prefix: use provided value or detect from main worktree
-    db_prefix ||= close.send(:get_db_prefix)
-    close.instance_variable_set(:@db_prefix, db_prefix)
-    close.instance_variable_set(:@dev_database_name, "#{db_prefix}_#{worktree_name}_development")
-    close.instance_variable_set(:@test_database_name, "#{db_prefix}_#{worktree_name}_test")
-
+  def build_close
+    close = Dir.chdir(@worktree) { RailsWorktree::Commands::Close.new([]) }
+    close.instance_variable_set(:@worktree_name, "feature-x")
     close.send(:detect_paths)
-
+    calls = []
+    close.define_singleton_method(:calls) { calls }
+    close.define_singleton_method(:system) do |*args, **_options|
+      calls << args
+      true
+    end
     close
   end
 end

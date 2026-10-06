@@ -2,6 +2,41 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-06
+
+The gem now provisions checkouts that other tools create (herdr, Claude Code, Codex, plain git)
+instead of owning the whole flow.
+
+### Added
+
+- `worktree init [name] [--level minimal|test|full] [--seed] [--base REF] [--force]` provisions the
+  current linked worktree and is safe to repeat. `minimal` copies configuration and links `node_modules`,
+  `test` adds the configured `test_command` or an own test database, `full` adds own databases.
+- `.worktree.yml` project configuration: copy list, directories, touch files, node_modules mode,
+  database variables, template cloning and the test command.
+- `worktree install` and the installer write `.worktreeinclude` (Claude Code), a marked `## Worktrees`
+  block in `AGENTS.md`/`CLAUDE.md`, and a herdr plugin under `.worktree/herdr/` that runs
+  `init --level minimal` on `worktree.created`.
+- The development database is cloned from the main one with `CREATE DATABASE ... TEMPLATE` on
+  PostgreSQL, with a schema-load fallback. Seeding is opt-in with `--seed`.
+
+### Changed
+
+- **Breaking:** database names are written to `.env.development.local` and `.env.test.local` as
+  `DATABASE_NAME` (configurable) instead of `DATABASE_NAME_DEVELOPMENT`/`DATABASE_NAME_TEST` in `.env`,
+  and `config/database.yml` is copied unchanged.
+- **Breaking:** `init` no longer runs `bin/setup`, migrations or seeds by default.
+- **Breaking:** `close` drops only the databases recorded in the worktree's `.env.*.local` files.
+  Worktrees created by 0.2 keep their databases; drop them by hand.
+- Worktree names are sanitized to `[A-Za-z0-9_]` in database names.
+- `node_modules` is symlinked to the main checkout by default instead of copied.
+- `create NAME BASE` is the explicit form of the previous default command and takes `--level` and `--seed`.
+- Requires Ruby 3.0 or newer.
+
+### Removed
+
+- `--skip-seeds` (accepted and ignored; seeding is now opt-in).
+
 ## [0.2.0] - 2026-09-26
 
 ### Added
