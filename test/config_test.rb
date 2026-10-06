@@ -17,6 +17,7 @@ class ConfigTest < Minitest::Test
     assert_equal "link", config.node_modules
     assert_equal "DATABASE_NAME", config.development_variable
     assert config.template?
+    assert_equal 5 * 1024**3, config.template_max_bytes
     assert_nil config.test_command
   end
 
@@ -43,6 +44,8 @@ class ConfigTest < Minitest::Test
     File.write(File.join(@root, ".worktree.yml"), "level: huge\n")
     assert_raises(RailsWorktree::Error) { RailsWorktree::Config.load(@root) }
     File.write(File.join(@root, ".worktree.yml"), "node_modules: tarball\n")
+    assert_raises(RailsWorktree::Error) { RailsWorktree::Config.load(@root) }
+    File.write(File.join(@root, ".worktree.yml"), "database: {template_max_gb: 0}\n")
     assert_raises(RailsWorktree::Error) { RailsWorktree::Config.load(@root) }
     File.write(File.join(@root, ".worktree.yml"), "- list\n")
     assert_raises(RailsWorktree::Error) { RailsWorktree::Config.load(@root) }

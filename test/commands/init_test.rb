@@ -71,6 +71,7 @@ class InitTest < Minitest::Test
     assert_equal ["test", "myapp_feature_x_test", ["db:create"]], commands[2]
     assert_equal ["test", "myapp_feature_x_test", ["db:schema:load"]], commands[3]
     assert_equal 4, commands.length
+    assert_equal (5 * 1024**3).to_s, init.calls[0][0]["RAILS_WORKTREE_TEMPLATE_MAX_BYTES"]
     init.calls.each { |_env, command, *| assert_equal "bin/rails", command }
   end
 

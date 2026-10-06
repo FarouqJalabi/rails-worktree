@@ -23,7 +23,8 @@ module RailsWorktree
       "database" => {
         "development_variable" => "DATABASE_NAME",
         "test_variable" => "DATABASE_NAME",
-        "template" => true
+        "template" => true,
+        "template_max_gb" => 5
       },
       "test_command" => nil
     }.freeze
@@ -59,8 +60,10 @@ module RailsWorktree
         development_variable: DATABASE_NAME
         test_variable: DATABASE_NAME
         # Clone the main development database with CREATE DATABASE ... TEMPLATE
-        # (PostgreSQL) instead of loading the schema. Falls back when it fails.
+        # (PostgreSQL) instead of loading the schema. Falls back when it fails or
+        # when the source database is larger than template_max_gb.
         template: true
+        template_max_gb: 5
 
       # Command for `--level test`, for example bin/agent-test-setup. Without it
       # the test level creates an own test database and loads the schema.
@@ -90,6 +93,7 @@ module RailsWorktree
     def development_variable = @data.dig("database", "development_variable").to_s
     def test_variable = @data.dig("database", "test_variable").to_s
     def template? = @data.dig("database", "template") ? true : false
+    def template_max_bytes = (@data.dig("database", "template_max_gb").to_f * 1024**3).to_i
     def test_command = @data["test_command"]&.to_s
 
     private
@@ -98,6 +102,7 @@ module RailsWorktree
       raise Error, "#{FILE}: level must be one of #{LEVELS.join(", ")}" unless LEVELS.include?(level)
       raise Error, "#{FILE}: node_modules must be one of #{NODE_MODULES_MODES.join(", ")}" unless NODE_MODULES_MODES.include?(node_modules)
       raise Error, "#{FILE}: database variables must be set" if development_variable.empty? || test_variable.empty?
+      raise Error, "#{FILE}: database.template_max_gb must be a positive number" unless template_max_bytes.positive?
     end
 
     def deep_merge(base, overrides)

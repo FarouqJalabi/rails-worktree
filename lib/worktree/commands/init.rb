@@ -142,9 +142,10 @@ module RailsWorktree
 
         puts "Cloning the development database into #{development_database}..."
         script = File.expand_path("../clone_database.rb", __dir__)
-        return true if run_command(@context.environment.merge("RAILS_ENV" => "development"), "bin/rails", "runner", script, development_database)
+        env = @context.environment.merge("RAILS_ENV" => "development", "RAILS_WORKTREE_TEMPLATE_MAX_BYTES" => @config.template_max_bytes.to_s)
+        return true if run_command(env, "bin/rails", "runner", script, development_database)
 
-        puts "Warning: template clone failed (is the main development database in use?); loading the schema instead"
+        puts "Warning: the template clone did not run (see above; a database in use or above template_max_gb); loading the schema instead"
         false
       end
 

@@ -61,6 +61,7 @@ database:
   development_variable: DATABASE_NAME   # written to .env.development.local
   test_variable: DATABASE_NAME          # written to .env.test.local
   template: true                        # clone the main development database (PostgreSQL)
+  template_max_gb: 5                    # larger source databases load the schema instead
 test_command: bin/agent-test-setup      # --level test runs this instead of creating a test database
 ```
 
@@ -99,8 +100,8 @@ bin/worktree close                    # from inside the worktree
 ```
 
 The base for `create` is required and the resolved commit is recorded; creation does not fetch or change
-your base branch. If the template clone fails, for example because the main development database is in
-use, `init` creates the database and loads the schema instead and says so.
+your base branch. If the template clone cannot run, because the main development database is in use or larger
+than `template_max_gb`, `init` creates the database and loads the schema instead and says so.
 
 `close` drops only databases named in the worktree's `.env.development.local` and `.env.test.local`.
 A `minimal` checkout shares the main databases and they stay untouched.

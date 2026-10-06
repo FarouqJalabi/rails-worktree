@@ -18,7 +18,8 @@ instead of owning the whole flow.
   block in `AGENTS.md`/`CLAUDE.md`, and a herdr plugin under `.worktree/herdr/` that runs
   `init --level minimal` on `worktree.created`.
 - The development database is cloned from the main one with `CREATE DATABASE ... TEMPLATE` on
-  PostgreSQL, with a schema-load fallback. Seeding is opt-in with `--seed`.
+  PostgreSQL, capped by `database.template_max_gb` (default 5), with a schema-load fallback.
+  Seeding is opt-in with `--seed`.
 
 ### Changed
 
