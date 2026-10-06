@@ -2,6 +2,8 @@ require "test_helper"
 require "rake"
 
 class InstallerTest < Minitest::Test
+  include RepositoryFixture
+
   def setup
     @root = Dir.mktmpdir("worktree-install")
     @gitignore = File.join(@root, ".gitignore")
@@ -95,6 +97,23 @@ class InstallerTest < Minitest::Test
     RailsWorktree::Installer.install(@root)
     assert_includes File.read(File.join(@root, "CLAUDE.md")), "## Worktrees"
     assert_equal 1, File.read(File.join(@root, "AGENTS.md")).scan("rails-worktree:start").length
+  end
+
+  def test_herdr_plugin_id_names_the_main_checkout_from_a_worktree
+    main = File.join(@root, "myapp")
+    child = File.join(@root, "feature")
+    FileUtils.mkdir_p(main)
+    git(main, "init", "--quiet", "--initial-branch=main")
+    git(main, "config", "user.name", "Test")
+    git(main, "config", "user.email", "test@example.test")
+    File.write(File.join(main, "README.md"), "app\n")
+    git(main, "add", ".")
+    git(main, "commit", "--quiet", "-m", "base")
+    git(main, "worktree", "add", "--quiet", "-b", "feature", child, "main")
+
+    RailsWorktree::Installer.install(child)
+
+    assert_includes File.read(File.join(child, ".worktree/herdr/herdr-plugin.toml")), "id = \"rails-worktree.myapp\""
   end
 
   def test_rake_install_updates_gitignore_when_launcher_exists_and_continues
