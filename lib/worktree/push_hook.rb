@@ -9,7 +9,7 @@ module RailsWorktree
       output, error, status = Open3.capture3(Context::GIT_ENVIRONMENT, "git", "-C", root, "rev-parse", "--git-path", "hooks/pre-push")
       raise Error, "Cannot locate pre-push hook: #{error}" unless status.success?
       path = File.expand_path(output.strip, root)
-      return warn_tracked(path) if tracked?(root, File.dirname(path))
+      return warn_tracked(path) if tracked?(File.dirname(path))
       return if File.file?(path) && File.read(path).include?(MARKER)
       previous = "#{path}.before-rails-worktree"
       raise Error, "Hook backup already exists: #{previous}; restore it before installing the worktree hook." if File.exist?(previous)
@@ -45,11 +45,11 @@ module RailsWorktree
       File.chmod(0755, path)
     end
 
-    def self.tracked?(root, directory)
+    def self.tracked?(directory)
       return false unless File.directory?(directory)
-      relative = File.realpath(directory).delete_prefix(File.realpath(root) + File::SEPARATOR)
-      return false if relative == File.realpath(directory)
-      output, _, status = Open3.capture3(Context::GIT_ENVIRONMENT, "git", "-C", root, "ls-files", "--", relative)
+      inside, _, status = Open3.capture3(Context::GIT_ENVIRONMENT, "git", "-C", directory, "rev-parse", "--is-inside-work-tree")
+      return false unless status.success? && inside.strip == "true"
+      output, _, status = Open3.capture3(Context::GIT_ENVIRONMENT, "git", "-C", directory, "ls-files", "--", ".")
       status.success? && !output.empty?
     end
 
