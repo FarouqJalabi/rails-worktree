@@ -123,13 +123,19 @@ module RailsWorktree
         # Runs bin/worktree init in the worktree that herdr just created.
         # Skips checkouts of other repositories (no bin/worktree launcher).
         set -eu
-        path=$(ruby -rjson -e 'event = JSON.parse(ENV.fetch("HERDR_PLUGIN_EVENT_JSON", "{}")); puts(event.dig("worktree", "path") || event["path"] || "")')
-        [ -n "$path" ] || exit 0
+        # herdr wraps the payload: {"event": "worktree_created", "data": {"worktree": {"path": ...}}}.
+        path=$(ruby -rjson -e 'event = JSON.parse(ENV.fetch("HERDR_PLUGIN_EVENT_JSON", "{}")); event = event["data"] || event; puts(event.dig("worktree", "path") || event["path"] || "")')
+        [ -n "$path" ] || { echo "rails-worktree: no worktree path in the event; skipped" >&2; exit 0; }
         [ -x "$path/bin/worktree" ] || exit 0
         here=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
         main_of() { git -C "$1" worktree list --porcelain | head -n 1 | sed 's/^worktree //'; }
         [ "$(main_of "$path")" = "$(main_of "$here")" ] || exit 0
         cd "$path"
+        # herdr inherits the PATH of the shell that started it, which can put another Ruby first.
+        # mise exec selects the Ruby that the checkout's version file asks for.
+        if command -v mise >/dev/null 2>&1; then
+          exec mise exec -- bin/worktree init --level "${RAILS_WORKTREE_HERDR_LEVEL:-minimal}"
+        fi
         exec bin/worktree init --level "${RAILS_WORKTREE_HERDR_LEVEL:-minimal}"
       SH
       write_if_changed(manifest, manifest_body)
