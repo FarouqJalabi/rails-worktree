@@ -141,6 +141,15 @@ hook is preserved as `pre-push.before-rails-worktree` and runs after verificatio
 hook checks the branch, base ancestry and bundle root, then prints the change summary against the recorded
 base. Git's `--no-verify` still bypasses hooks.
 
+If `core.hooksPath` points at a directory that Git tracks (for example `script/hooks`), the gem does not
+write there and prints a warning instead. Call the check from your own pre-push hook:
+
+```sh
+bin/worktree verify --push || exit 1
+```
+
+It reads the pushed refs from standard input and does nothing in checkouts without worktree metadata.
+
 ## Requirements
 
 - Ruby >= 3.0

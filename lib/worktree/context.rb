@@ -18,6 +18,7 @@ module RailsWorktree
     end
 
     def verify(push: false)
+      return if push && !File.file?(metadata_path)
       data = JSON.parse(File.read(metadata_path))
       raise Error, "Invalid worktree context in #{metadata_path}; expected an object with base, commit and branch." unless data.is_a?(Hash)
       verify_branch(data)

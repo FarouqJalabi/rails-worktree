@@ -1,6 +1,5 @@
 require "fileutils"
 require "open3"
-require "rbconfig"
 
 module RailsWorktree
   class PushHook
@@ -10,13 +9,14 @@ module RailsWorktree
       output, error, status = Open3.capture3(Context::GIT_ENVIRONMENT, "git", "-C", root, "rev-parse", "--git-path", "hooks/pre-push")
       raise Error, "Cannot locate pre-push hook: #{error}" unless status.success?
       path = File.expand_path(output.strip, root)
+      return warn_tracked(path) if tracked?(root, File.dirname(path))
       return if File.file?(path) && File.read(path).include?(MARKER)
       previous = "#{path}.before-rails-worktree"
       raise Error, "Hook backup already exists: #{previous}; restore it before installing the worktree hook." if File.exist?(previous)
       FileUtils.mkdir_p(File.dirname(path))
       FileUtils.mv(path, previous) if File.exist?(path)
       File.write(path, <<~RUBY)
-        #!#{RbConfig.ruby}
+        #!/usr/bin/env ruby
         #{MARKER}
         require "open3"
         require "tempfile"
@@ -43,6 +43,19 @@ module RailsWorktree
         end
       RUBY
       File.chmod(0755, path)
+    end
+
+    def self.tracked?(root, directory)
+      return false unless File.directory?(directory)
+      relative = File.realpath(directory).delete_prefix(File.realpath(root) + File::SEPARATOR)
+      return false if relative == File.realpath(directory)
+      output, _, status = Open3.capture3(Context::GIT_ENVIRONMENT, "git", "-C", root, "ls-files", "--", relative)
+      status.success? && !output.empty?
+    end
+
+    def self.warn_tracked(path)
+      warn "Skipped the pre-push hook: #{path} is in a directory that Git tracks. " \
+        "Run `bin/worktree verify --push` from that hook instead and pass it the hook's standard input."
     end
   end
 end
