@@ -60,12 +60,27 @@ node_modules: link               # link (symlink to the main checkout), copy or 
 database:
   development_variable: DATABASE_NAME   # written to .env.development.local
   test_variable: DATABASE_NAME          # written to .env.test.local
-  template: true                        # clone the main development database (PostgreSQL)
+  template: true                        # clone the main development database (PostgreSQL TEMPLATE, SQLite copy)
   template_max_gb: 5                    # larger source databases load the schema instead
 test_command: bin/agent-test-setup      # --level test runs this instead of creating a test database
 ```
 
-`config/database.yml` reads the database name from the configured variable, for example:
+### Databases
+
+Before it touches a database, `init` asks Rails how `config/database.yml` resolves in the worktree and
+picks one of three paths:
+
+- **SQLite files inside the checkout** (the `rails new` default, `storage/development.sqlite3`): every
+  checkout already has its own files. `full` copies the main development database into the worktree
+  (subject to `template` and `template_max_gb`) and prepares the test database; `test` prepares only the
+  test database. No `.env.*.local` files are written and `close` simply removes them with the checkout.
+- **A database name read from the configured variable, with dotenv loaded**: the names go into
+  `.env.development.local` and `.env.test.local` and the databases are created as described below.
+- **Anything else**, such as a fresh `rails new -d postgresql` app with fixed names: `init` warns and
+  skips the database setup, so the checkout shares the main databases and nothing in them is changed.
+
+To give PostgreSQL or MySQL worktrees their own databases, add `gem "dotenv-rails", groups: [:development, :test]`
+and read the name from the configured variable in `config/database.yml`:
 
 ```yaml
 development:
@@ -79,7 +94,8 @@ test:
 Database names are `<prefix>_<worktree>_development` and `<prefix>_<worktree>_test`. The prefix comes from
 `config/database.yml` in the main checkout, the worktree name from the directory, with other characters
 replaced by `_`. The names go into `.env.development.local` and `.env.test.local`, which dotenv loads per
-environment and which stay out of git. `database.yml` is copied unchanged.
+environment and which stay out of git. `database.yml` is copied unchanged. An application without
+`db/schema.rb` or `db/structure.sql` yet gets `db:migrate` instead of `db:schema:load`.
 
 ## Usage
 
@@ -95,7 +111,7 @@ bin/worktree init --level test        # plus the isolated test setup
 bin/worktree init --base origin/main  # also record the base and install the push guard
 bin/worktree init --force             # overwrite copied files with the main checkout's
 
-bin/worktree close feature            # from the main checkout
+bin/worktree close feature            # from the main checkout, by directory or branch name
 bin/worktree close                    # from inside the worktree
 ```
 
@@ -128,8 +144,10 @@ base. Git's `--no-verify` still bypasses hooks.
 ## Requirements
 
 - Ruby >= 3.0
-- Rails project with `bin/rails` and dotenv (for the per-environment `.env.*.local` files)
-- PostgreSQL for template cloning; other databases fall back to `db:create` and `db:schema:load`
+- Rails project with `bin/rails`
+- For own databases: SQLite files in the checkout, or dotenv and a `database.yml` that reads the configured
+  variable (see Databases)
+- PostgreSQL for template cloning; other server databases fall back to `db:create` and `db:schema:load`
 
 ## License
 

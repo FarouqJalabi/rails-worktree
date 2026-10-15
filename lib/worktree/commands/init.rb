@@ -1,4 +1,6 @@
 require "fileutils"
+require "json"
+require "open3"
 
 module RailsWorktree
   module Commands
@@ -109,17 +111,104 @@ module RailsWorktree
           puts "Running #{@config.test_command}..."
           run_command(@context.environment, *@config.test_command.split(" ")) || raise(Error, "#{@config.test_command} failed")
         else
-          write_env_file("test", test_database)
-          prepare_schema("test", test_database)
+          case database_mode(%w[test])
+          when :files
+            prepare_schema("test", nil)
+          when :variable
+            write_env_file("test", test_database)
+            prepare_schema("test", test_database)
+          end
         end
       end
 
       def setup_databases
+        case database_mode(%w[development test])
+        when :files then setup_sqlite_databases
+        when :variable then setup_named_databases
+        end
+      end
+
+      # How this checkout gets its own databases: :files when config/database.yml
+      # points at SQLite files inside the checkout, :variable when it reads the
+      # configured variable and dotenv loads .env.*.local. Otherwise nil, and the
+      # checkout keeps sharing the main databases.
+      def database_mode(environments)
         unless File.executable?("bin/rails")
           puts "Warning: bin/rails not found; skipping database setup"
           return
         end
 
+        @probe = probe_databases(environments)
+        unless @probe
+          puts "Warning: could not read config/database.yml (see above); skipping database setup"
+          return
+        end
+
+        configs = environments.to_h { |environment| [environment, @probe[environment]] }
+        return :files if configs.values.all? { |config| sqlite_in_checkout?(config) }
+
+        environment, config = configs.find { |name, config| config.nil? || config["override"] != database_for(name) }
+        if environment
+          puts "Warning: config/database.yml does not read #{variable_for(environment)} for the #{environment} database, " \
+            "so this checkout would use #{config ? config["database"] : "no database"} like the main checkout. " \
+            "Skipping database setup; see Databases in the rails-worktree README."
+        elsif !@probe["dotenv"]
+          puts "Warning: dotenv is not loaded, so Rails would ignore .env.development.local and .env.test.local " \
+            "and use the main databases. Add gem \"dotenv-rails\" to the Gemfile. Skipping database setup."
+        else
+          :variable
+        end
+      end
+
+      def probe_databases(environments)
+        script = File.expand_path("../database_probe.rb", __dir__)
+        arguments = environments.map { |environment| "#{environment}:#{variable_for(environment)}=#{database_for(environment)}" }
+        env = @context.environment.merge("RAILS_ENV" => "development")
+        output, status = Open3.capture2(env, *@context.command(["bin/rails", "runner", script, *arguments]), unsetenv_others: true)
+        line = output.lines.grep(/\ARAILS_WORKTREE_PROBE /).last
+        JSON.parse(line.delete_prefix("RAILS_WORKTREE_PROBE ")) if status.success? && line
+      end
+
+      def sqlite_in_checkout?(config)
+        return false unless config && config["adapter"].include?("sqlite")
+        return false if config["database"].empty? || config["database"].start_with?(":memory:", "file:")
+
+        File.expand_path(config["database"], @root).start_with?(@root + File::SEPARATOR)
+      end
+
+      # SQLite files resolve inside each checkout, so the databases are separate
+      # already. The development database starts as a copy of the main checkout's.
+      def setup_sqlite_databases
+        if @config.template? && copy_sqlite_database(@probe.dig("development", "database"))
+          rails("development", nil, "db:migrate") || puts("Warning: migrations failed")
+        else
+          prepare_schema("development", nil)
+        end
+        prepare_schema("test", nil)
+        seed(nil)
+      end
+
+      # Returns true when the checkout has its development database, copied now or before.
+      def copy_sqlite_database(database)
+        source = File.join(@main_worktree, database)
+        target = File.expand_path(database, @root)
+        return true if File.exist?(target)
+        return false unless File.file?(source)
+        if File.size(source) > @config.template_max_bytes
+          puts "Warning: #{database} in the main checkout is above database.template_max_gb; loading the schema instead"
+          return false
+        end
+
+        puts "Copying the development database #{database} from the main checkout..."
+        FileUtils.mkdir_p(File.dirname(target))
+        script = File.expand_path("../copy_sqlite.rb", __dir__)
+        return true if run_command(@context.environment, "bundle", "exec", "ruby", script, source, target)
+
+        puts "Warning: could not copy #{database} (see above); loading the schema instead"
+        false
+      end
+
+      def setup_named_databases
         cloned = @config.template? && clone_development_database
         write_env_file("development", development_database)
         write_env_file("test", test_database)
@@ -129,10 +218,14 @@ module RailsWorktree
           prepare_schema("development", development_database)
         end
         prepare_schema("test", test_database)
+        seed(development_database)
+      end
+
+      def seed(database)
         return unless @seed
 
-        puts "Seeding #{development_database}..."
-        rails("development", development_database, "db:seed") || puts("Warning: seeding failed")
+        puts "Seeding #{database || "the development database"}..."
+        rails("development", database, "db:seed") || puts("Warning: seeding failed")
       end
 
       # Runs without the worktree database override so the configured development
@@ -149,16 +242,21 @@ module RailsWorktree
         false
       end
 
+      # Creates the database and loads the schema, or runs the migrations in an
+      # application without a schema file yet. A nil database uses database.yml as is.
       def prepare_schema(environment, database)
-        return unless File.executable?("bin/rails")
-
-        puts "Preparing #{database}..."
-        rails(environment, database, "db:create") || puts("Warning: could not create #{database}")
-        rails(environment, database, "db:schema:load") || puts("Warning: could not load the schema into #{database}")
+        label = database || "the #{environment} database"
+        puts "Preparing #{label}..."
+        rails(environment, database, "db:create") || puts("Warning: could not create #{label}")
+        if %w[db/schema.rb db/structure.sql].any? { |file| File.file?(file) }
+          rails(environment, database, "db:schema:load") || puts("Warning: could not load the schema into #{label}")
+        else
+          rails(environment, database, "db:migrate") || puts("Warning: could not migrate #{label}")
+        end
       end
 
       def write_env_file(environment, database)
-        variable = environment == "test" ? @config.test_variable : @config.development_variable
+        variable = variable_for(environment)
         path = ENV_FILES.fetch(environment)
         content = File.exist?(path) ? File.read(path) : "# Written by bin/worktree init; dotenv loads it in the #{environment} environment only.\n"
         line = "#{variable}=#{database}"
@@ -172,10 +270,13 @@ module RailsWorktree
       end
 
       def rails(environment, database, *arguments)
-        variable = environment == "test" ? @config.test_variable : @config.development_variable
-        env = @context.environment.merge("RAILS_ENV" => environment, variable => database, "DISABLE_DATABASE_ENVIRONMENT_CHECK" => "1")
+        env = @context.environment.merge("RAILS_ENV" => environment, "DISABLE_DATABASE_ENVIRONMENT_CHECK" => "1")
+        env[variable_for(environment)] = database if database
         run_command(env, "bin/rails", *arguments)
       end
+
+      def variable_for(environment) = environment == "test" ? @config.test_variable : @config.development_variable
+      def database_for(environment) = environment == "test" ? test_database : development_database
 
       def run_command(environment, *arguments)
         command = @context.command(arguments)

@@ -11,6 +11,8 @@ class InitTest < Minitest::Test
     write_main("config/credentials/test.key", "test-key")
     write_main("config/credentials/test.yml.enc", "encrypted")
     write_main("node_modules/left-pad/index.js", "module.exports = 1")
+    FileUtils.mkdir_p(File.join(@worktree, "db"))
+    File.write(File.join(@worktree, "db/schema.rb"), "")
     [@main, @worktree].each do |root|
       FileUtils.mkdir_p(File.join(root, "bin"))
       File.write(File.join(root, "bin/rails"), "#!/bin/sh\nexit 0\n")
@@ -126,6 +128,61 @@ class InitTest < Minitest::Test
     assert_equal [["test", "db:create"], ["test", "db:schema:load"]], init.calls.map { |env, *command| [env["RAILS_ENV"], command.last] }
   end
 
+  def test_full_migrates_without_a_schema_file
+    File.delete(File.join(@worktree, "db/schema.rb"))
+    init = run_init(level: "full", failing: ["runner"])
+
+    tasks = init.calls.map { |env, *command| [env["RAILS_ENV"], command.last] }
+    assert_equal [["development", "myapp_feature_x_development"], ["development", "db:create"], ["development", "db:migrate"],
+      ["test", "db:create"], ["test", "db:migrate"]], tasks
+  end
+
+  def test_full_with_sqlite_files_copies_the_development_database_without_env_files
+    write_main("storage/development.sqlite3", "data")
+    init = run_init(level: "full", seed: true, probe: sqlite_probe)
+
+    refute File.exist?(File.join(@worktree, ".env.development.local"))
+    refute File.exist?(File.join(@worktree, ".env.test.local"))
+    copy, *tasks = init.calls
+    assert_equal ["exec", "ruby", File.expand_path("../../lib/worktree/copy_sqlite.rb", __dir__),
+      File.join(@main, "storage/development.sqlite3"), File.join(@worktree, "storage/development.sqlite3")], copy.last(5)
+    assert_equal [["development", "db:migrate"], ["test", "db:create"], ["test", "db:schema:load"], ["development", "db:seed"]],
+      tasks.map { |env, *command| [env["RAILS_ENV"], command.last] }
+    tasks.each { |env, *| refute env.key?("DATABASE_NAME") }
+  end
+
+  def test_full_with_sqlite_files_prepares_the_schema_without_a_main_database
+    init = run_init(level: "full", probe: sqlite_probe)
+
+    assert_equal [["development", "db:create"], ["development", "db:schema:load"], ["test", "db:create"], ["test", "db:schema:load"]],
+      init.calls.map { |env, *command| [env["RAILS_ENV"], command.last] }
+  end
+
+  def test_test_level_with_sqlite_files_prepares_the_checkout_test_database
+    init = run_init(level: "test", probe: sqlite_probe)
+
+    refute File.exist?(File.join(@worktree, ".env.test.local"))
+    assert_equal [["test", "db:create"], ["test", "db:schema:load"]], init.calls.map { |env, *command| [env["RAILS_ENV"], command.last] }
+  end
+
+  def test_skips_databases_when_database_yml_ignores_the_variable
+    probe = postgres_probe
+    probe["development"]["override"] = "myapp_development"
+    init, out = run_init(level: "full", probe: probe, output: true)
+
+    assert_empty init.calls
+    refute File.exist?(File.join(@worktree, ".env.development.local"))
+    assert_includes out, "does not read DATABASE_NAME for the development database"
+  end
+
+  def test_skips_databases_without_dotenv
+    init, out = run_init(level: "test", probe: postgres_probe.merge("dotenv" => false), output: true)
+
+    assert_empty init.calls
+    refute File.exist?(File.join(@worktree, ".env.test.local"))
+    assert_includes out, "dotenv-rails"
+  end
+
   def test_level_defaults_to_the_configured_level
     write_main(".worktree.yml", "level: minimal\n")
     init = run_init
@@ -144,8 +201,21 @@ class InitTest < Minitest::Test
     File.read(File.join(@worktree, file)).lines.map(&:strip).reject { |line| line.empty? || line.start_with?("#") }.join("\n")
   end
 
-  # Runs init in the worktree with system calls recorded instead of executed.
-  def run_init(level: nil, seed: false, force: false, failing: [])
+  def postgres_probe
+    {"dotenv" => true,
+     "development" => {"adapter" => "postgresql", "database" => "myapp_development", "override" => "myapp_feature_x_development"},
+     "test" => {"adapter" => "postgresql", "database" => "myapp_test", "override" => "myapp_feature_x_test"}}
+  end
+
+  def sqlite_probe
+    {"dotenv" => false,
+     "development" => {"adapter" => "sqlite3", "database" => "storage/development.sqlite3", "override" => "storage/development.sqlite3"},
+     "test" => {"adapter" => "sqlite3", "database" => "storage/test.sqlite3", "override" => "storage/test.sqlite3"}}
+  end
+
+  # Runs init in the worktree with system calls recorded instead of executed
+  # and the database.yml probe answered by PROBE.
+  def run_init(level: nil, seed: false, force: false, failing: [], probe: postgres_probe, output: false)
     init = RailsWorktree::Commands::Init.new([], level: level, seed: seed, force: force)
     calls = []
     init.define_singleton_method(:calls) { calls }
@@ -153,7 +223,8 @@ class InitTest < Minitest::Test
       calls << [env, *command]
       failing.none? { |task| command.include?(task) }
     end
-    Dir.chdir(@worktree) { capture_io { init.run } }
-    init
+    init.define_singleton_method(:probe_databases) { |_environments| probe }
+    out, _err = Dir.chdir(@worktree) { capture_io { init.run } }
+    output ? [init, out] : init
   end
 end
