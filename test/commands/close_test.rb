@@ -79,6 +79,20 @@ class CloseTest < Minitest::Test
     refute Dir.exist?(@worktree)
   end
 
+  def test_close_from_the_main_checkout_finds_worktrees_outside_the_worktrees_directory
+    outside = File.join(@directory, "claude-checkout")
+    git(@main, "worktree", "add", "--quiet", "-b", "claude/thing", outside, "main")
+
+    Dir.chdir(@main) { capture_io { RailsWorktree::Commands::Close.new(["claude-checkout"]).run } }
+
+    refute Dir.exist?(outside)
+    assert_empty git(@main, "branch", "--list", "claude/thing")
+  end
+
+  def test_close_from_the_main_checkout_rejects_unknown_names
+    Dir.chdir(@main) { assert_raises(RailsWorktree::Error) { RailsWorktree::Commands::Close.new(["missing"]).run } }
+  end
+
   private
 
   def build_close

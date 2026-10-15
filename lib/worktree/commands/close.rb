@@ -31,7 +31,7 @@ module RailsWorktree
         puts ""
         puts "✓ Worktree '#{@worktree_name}' closed successfully!"
         puts "  Worktree removed from #{@worktree_path}"
-        puts "  Branch #{@worktree_name} deleted"
+        puts "  Branch #{@branch} deleted" if @branch_deleted
 
         unless @in_main_repo
           puts ""
@@ -55,13 +55,29 @@ module RailsWorktree
         end
       end
 
+      # Finds the checkout in git's worktree list by directory name or branch, so
+      # worktrees outside .worktrees/ (git worktree add, herdr, Claude Code) close too.
       def detect_paths
-        if @current_dir == @main_worktree
-          @in_main_repo = true
-          @worktree_path = File.join(@main_worktree, ".worktrees", @worktree_name)
+        @in_main_repo = @current_dir == @main_worktree
+        entries = worktree_entries.reject { |entry| entry[:path] == @main_worktree }
+        entry = if @in_main_repo
+          entries.find { |candidate| candidate[:path] == File.join(@main_worktree, ".worktrees", @worktree_name) } ||
+            entries.find { |candidate| File.basename(candidate[:path]) == @worktree_name || candidate[:branch] == @worktree_name }
         else
-          @in_main_repo = false
-          @worktree_path = @current_dir
+          entries.find { |candidate| candidate[:path] == @current_dir }
+        end
+        raise Error, "No worktree named #{@worktree_name}; see git worktree list." if @in_main_repo && !entry
+
+        @worktree_path = entry ? entry[:path] : @current_dir
+        @branch = entry ? entry[:branch] : @worktree_name
+      end
+
+      def worktree_entries
+        `git worktree list --porcelain`.split("\n\n").map do |block|
+          lines = block.lines.map(&:strip)
+          path = lines.find { |line| line.start_with?("worktree ") }&.delete_prefix("worktree ")
+          branch = lines.find { |line| line.start_with?("branch ") }&.delete_prefix("branch refs/heads/")
+          {path: path, branch: branch}
         end
       end
 
@@ -85,7 +101,7 @@ module RailsWorktree
       def drop_databases
         databases = worktree_databases
         if databases.empty?
-          puts "No worktree-local databases recorded; leaving the shared databases alone"
+          puts "No worktree-local databases in .env.development.local or .env.test.local; nothing to drop"
           return
         end
         unless File.executable?(File.join(@worktree_path, "bin/rails"))
@@ -126,8 +142,11 @@ module RailsWorktree
       end
 
       def delete_branch
-        puts "Deleting branch #{@worktree_name}..."
-        system("git", "branch", "-D", @worktree_name, err: File::NULL) || puts("Warning: Could not delete branch #{@worktree_name}")
+        return puts("No branch to delete (detached HEAD)") unless @branch
+
+        puts "Deleting branch #{@branch}..."
+        @branch_deleted = system("git", "branch", "-D", @branch, err: File::NULL)
+        puts("Warning: Could not delete branch #{@branch}") unless @branch_deleted
       end
     end
   end

@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Works in a brand new Rails application. `init` probes how `config/database.yml` resolves before it
+  touches a database: SQLite files inside the checkout are copied and prepared there without
+  `.env.*.local` files, and a `database.yml` that ignores the configured variable (or a bundle without
+  dotenv) skips the database setup with a warning instead of creating, loading or migrating the main
+  checkout's databases.
+- Applications without `db/schema.rb` or `db/structure.sql` run `db:migrate` instead of failing in
+  `db:schema:load`.
+- `close NAME` from the main checkout finds worktrees outside `.worktrees/` by directory or branch name,
+  fails for unknown names instead of reporting success, and deletes the worktree's actual branch.
+
 ## [0.3.0] - 2026-10-06
 
 The gem now provisions checkouts that other tools create (herdr, Claude Code, Codex, plain git)

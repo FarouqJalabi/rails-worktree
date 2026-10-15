@@ -4,7 +4,7 @@ namespace :worktree do
     RailsWorktree::Installer.install(Dir.pwd, replace: ENV["FORCE"] == "1", quiet: false)
 
     puts "✓ rails-worktree is installed"
-    puts "Usage: bin/worktree create <name> <base-branch>"
+    puts "Usage: bin/worktree create <name> <base>"
     puts "Link the herdr plugin once with: herdr plugin link #{RailsWorktree::Installer::HERDR_DIR}"
   end
 

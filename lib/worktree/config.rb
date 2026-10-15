@@ -60,7 +60,7 @@ module RailsWorktree
         development_variable: DATABASE_NAME
         test_variable: DATABASE_NAME
         # Clone the main development database with CREATE DATABASE ... TEMPLATE
-        # (PostgreSQL) instead of loading the schema. Falls back when it fails or
+        # (PostgreSQL) or by copying the SQLite file, instead of loading the schema. Falls back when it fails or
         # when the source database is larger than template_max_gb.
         template: true
         template_max_gb: 5
