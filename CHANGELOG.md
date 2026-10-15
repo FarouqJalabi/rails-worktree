@@ -13,6 +13,10 @@
   `db:schema:load`.
 - `close NAME` from the main checkout finds worktrees outside `.worktrees/` by directory or branch name,
   fails for unknown names instead of reporting success, and deletes the worktree's actual branch.
+- The herdr plugin provisions new worktrees again. `provision` reads the worktree path from the event's
+  `data` object, where herdr puts it, and runs `bin/worktree init` through `mise exec` when mise is
+  installed, so herdr's inherited PATH cannot select another Ruby. Run `bin/worktree install --force`
+  to regenerate the script.
 
 ## [0.3.0] - 2026-10-06
 

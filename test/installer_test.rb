@@ -116,6 +116,28 @@ class InstallerTest < Minitest::Test
     assert_includes File.read(File.join(child, ".worktree/herdr/herdr-plugin.toml")), "id = \"rails-worktree.myapp\""
   end
 
+  def test_herdr_provision_reads_the_wrapped_event_and_runs_init
+    main = File.join(@root, "myapp")
+    child = File.join(@root, "feature")
+    FileUtils.mkdir_p(main)
+    git(main, "init", "--quiet", "--initial-branch=main")
+    git(main, "config", "user.name", "Test")
+    git(main, "config", "user.email", "test@example.test")
+    FileUtils.mkdir_p(File.join(main, "bin"))
+    File.write(File.join(main, "bin/worktree"), "#!/bin/sh\necho \"$@\" > provisioned\n")
+    File.chmod(0755, File.join(main, "bin/worktree"))
+    git(main, "add", ".")
+    git(main, "commit", "--quiet", "-m", "base")
+    git(main, "worktree", "add", "--quiet", "-b", "feature", child, "main")
+    RailsWorktree::Installer.install(main)
+
+    event = { event: "worktree_created", data: { worktree: { path: child, branch: "feature" } } }
+    _output, error, status = Open3.capture3({ "HERDR_PLUGIN_EVENT_JSON" => JSON.generate(event) }, File.join(main, ".worktree/herdr/provision"))
+
+    assert status.success?, error
+    assert_equal "init --level minimal\n", File.read(File.join(child, "provisioned"))
+  end
+
   def test_rake_install_updates_gitignore_when_launcher_exists_and_continues
     RailsWorktree::Launcher.install(@root)
     Rake.with_application do
