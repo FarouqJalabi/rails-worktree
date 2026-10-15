@@ -17,6 +17,9 @@
   `script/hooks`), where it showed up as an untracked file and could move a tracked hook aside. `create`
   and `init --base` print how to call `bin/worktree verify --push` from the project's own hook instead,
   and `verify --push` does nothing in checkouts without worktree metadata.
+- The tracked-directory check also covers an absolute `core.hooksPath` that points into the main
+  checkout. `create` and `init` from a linked worktree no longer write the pre-push hook into the main
+  checkout's tracked hooks directory.
 - The pre-push hook finds Ruby through `PATH` instead of the absolute path of the Ruby that installed it.
 - The herdr plugin provisions new worktrees again. `provision` reads the worktree path from the event's
   `data` object, where herdr puts it, and runs `bin/worktree init` through `mise exec` when mise is

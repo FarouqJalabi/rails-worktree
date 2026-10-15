@@ -163,6 +163,17 @@ class ContextTest < Minitest::Test
     assert_includes error, "bin/worktree verify --push"
   end
 
+  def test_hook_skips_a_tracked_hook_directory_in_another_checkout
+    FileUtils.mkdir_p(File.join(@main, "script/hooks"))
+    File.write(File.join(@main, "script/hooks/pre-commit"), "#!/bin/sh\n")
+    git(@main, "add", "script/hooks")
+    git(@main, "commit", "--quiet", "-m", "hooks")
+    git(@main, "config", "core.hooksPath", File.join(@main, "script/hooks"))
+    _, error = capture_subprocess_io { RailsWorktree::PushHook.install(@child) }
+    refute File.exist?(File.join(@main, "script/hooks/pre-push"))
+    assert_includes error, "bin/worktree verify --push"
+  end
+
   def test_verify_push_skips_an_unmanaged_checkout
     assert_nil RailsWorktree::Context.new(@main).verify(push: true)
     assert_raises(RailsWorktree::Error) { RailsWorktree::Context.new(@main).verify }
