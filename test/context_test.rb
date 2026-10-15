@@ -152,6 +152,28 @@ class ContextTest < Minitest::Test
     assert status.success?, error
   end
 
+  def test_hook_skips_a_tracked_hook_directory
+    FileUtils.mkdir_p(File.join(@child, "script/hooks"))
+    File.write(File.join(@child, "script/hooks/pre-commit"), "#!/bin/sh\n")
+    git(@child, "add", "script/hooks")
+    git(@child, "commit", "--quiet", "-m", "hooks")
+    git(@child, "config", "core.hooksPath", "script/hooks")
+    _, error = capture_subprocess_io { RailsWorktree::PushHook.install(@child) }
+    refute File.exist?(File.join(@child, "script/hooks/pre-push"))
+    assert_includes error, "bin/worktree verify --push"
+  end
+
+  def test_verify_push_skips_an_unmanaged_checkout
+    assert_nil RailsWorktree::Context.new(@main).verify(push: true)
+    assert_raises(RailsWorktree::Error) { RailsWorktree::Context.new(@main).verify }
+  end
+
+  def test_hook_finds_ruby_on_path
+    RailsWorktree::PushHook.install(@child)
+    path = File.expand_path(git(@child, "rev-parse", "--git-path", "hooks/pre-push").strip, @child)
+    assert_equal "#!/usr/bin/env ruby", File.readlines(path, chomp: true).first
+  end
+
   def test_hook_rejects_pushes_of_another_commit
     RailsWorktree::PushHook.install(@child)
     path = File.expand_path(git(@child, "rev-parse", "--git-path", "hooks/pre-push").strip, @child)
