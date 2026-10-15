@@ -57,6 +57,12 @@ module RailsWorktree
       File.expand_path(git(root, "rev-parse", "--git-path", "rails-worktree.json").strip, root)
     end
 
+    def git(directory, *arguments)
+      output, error, status = Open3.capture3(GIT_ENVIRONMENT, "git", "-C", directory, *arguments)
+      raise Error, "Git context check failed (#{arguments.join(" ")}): #{error.strip}" unless status.success?
+      output
+    end
+
     private
 
     def executable_path(path)
@@ -121,12 +127,6 @@ module RailsWorktree
       return unless resolved.include?("/bin/")
       _output, _error, status = Open3.capture3(GIT_ENVIRONMENT, "git", "-C", File.dirname(resolved), "rev-parse", "--show-toplevel")
       raise Error, "Binstub resolves outside this worktree: #{resolved}. Use this checkout's binstub through bin/worktree exec." if status.success?
-    end
-
-    def git(directory, *arguments)
-      output, error, status = Open3.capture3(GIT_ENVIRONMENT, "git", "-C", directory, *arguments)
-      raise Error, "Git context check failed (#{arguments.join(" ")}): #{error.strip}" unless status.success?
-      output
     end
   end
 end

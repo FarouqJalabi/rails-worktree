@@ -8,11 +8,9 @@ module RailsWorktree
       load "worktree/tasks.rb"
     end
 
-    initializer "worktree.install_binstub" do
-      # Install binstub automatically when Rails loads in development
-      if Rails.env.development?
-        Installer.install(Rails.root.to_s)
-      end
+    initializer "worktree.install" do
+      # Install the launcher and repository integration files when Rails loads in development.
+      Installer.install(Rails.root.to_s) if Rails.env.development?
     end
   end
 end

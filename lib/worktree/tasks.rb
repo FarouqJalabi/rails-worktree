@@ -1,10 +1,11 @@
 namespace :worktree do
-  desc "Install bin/worktree and ignore local .worktrees"
+  desc "Install bin/worktree, .worktree.yml, .worktreeinclude, the AGENTS.md block and the herdr plugin"
   task :install do
-    RailsWorktree::Installer.install(Dir.pwd, replace: ENV["FORCE"] == "1")
+    RailsWorktree::Installer.install(Dir.pwd, replace: ENV["FORCE"] == "1", quiet: false)
 
-    puts "✓ bin/worktree is installed and .worktrees is ignored"
-    puts "Usage: bin/worktree <name> <base-branch>"
+    puts "✓ rails-worktree is installed"
+    puts "Usage: bin/worktree create <name> <base-branch>"
+    puts "Link the herdr plugin once with: herdr plugin link #{RailsWorktree::Installer::HERDR_DIR}"
   end
 
   desc "Uninstall worktree binstub from bin/worktree"

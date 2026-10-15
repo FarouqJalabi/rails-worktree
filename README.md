@@ -1,16 +1,20 @@
 # Rails Worktree
 
-Git worktree management for Rails projects with isolated databases and configurations.
+Provisions git worktrees for Rails projects: configuration files, node_modules and optional
+isolated databases, in a checkout created by `bin/worktree`, plain git, herdr, Claude Code or Codex.
 
 ## Features
 
-- Create git worktrees from an explicit base with automatic branch creation
-- Run commands with worktree-local Bundler and binstubs
-- Verify the recorded base before execution and push
-- Isolated databases per worktree (separate development and test databases)
-- Automatic configuration file copying
-- Copy node_modules from main worktree
-- Easy cleanup with database dropping and directory removal
+- `bin/worktree init` prepares any linked worktree at one of three levels, and is safe to repeat:
+  - `minimal`: copies gitignored configuration from the main checkout, creates directories, links `node_modules`.
+  - `test`: minimal plus your isolated test setup command, or an own test database.
+  - `full`: minimal plus own development and test databases. The development database is cloned
+    from the main one with `CREATE DATABASE ... TEMPLATE` (PostgreSQL), so it is ready in seconds.
+- `bin/worktree create NAME BASE` creates a worktree under `.worktrees/` from an explicit base and provisions it.
+- `bin/worktree install` writes the integration files other tools read: `.worktreeinclude` for Claude Code,
+  a `## Worktrees` block in `AGENTS.md`/`CLAUDE.md` for coding agents, and a herdr plugin.
+- `exec` and `verify` run commands with worktree-local Bundler and binstubs and check the recorded base.
+- `close` drops the worktree-local databases, removes the checkout and deletes its branch.
 
 ## Installation
 
@@ -22,126 +26,110 @@ group :development do
 end
 ```
 
-Run `bundle install`. A binstub will be automatically created at `bin/worktree`.
-When Rails loads in development, installation also adds `/.worktrees/` to the project's
-`.gitignore`. The manual installer does the same, including when the binstub already exists.
+Run `bundle install`. When Rails loads in development the gem installs `bin/worktree` and the
+integration files below. The same happens with `bin/worktree install` or `bundle exec rake worktree:install`
+(`--force` / `FORCE=1` also replaces an existing launcher).
 
-Manual binstub installation (if needed):
-```bash
-bundle exec rake worktree:install
+| File | Purpose |
+| --- | --- |
+| `bin/worktree` | Launcher that pins `BUNDLE_GEMFILE` to its own checkout before Ruby starts |
+| `.gitignore` | Adds `/.worktrees/` |
+| `.worktree.yml` | Project configuration (written once with the defaults, then yours) |
+| `.worktreeinclude` | Generated from the `copy` list; Claude Code copies these files into every worktree it creates |
+| `AGENTS.md`, `CLAUDE.md` | A marked `## Worktrees` block that tells agents to run `bin/worktree init`; a symlinked pair is updated once |
+| `.worktree/herdr/` | A herdr plugin that runs `bin/worktree init --level minimal` on `worktree.created`; link it once with `herdr plugin link .worktree/herdr` |
+
+Commit `.worktree.yml`, `.worktreeinclude`, the agents block and `.worktree/herdr/`. They are project configuration.
+
+## Configuration
+
+`.worktree.yml` in the repository root, all keys optional:
+
+```yaml
+level: full                      # default level for create and init
+copy:                            # gitignored files to copy from the main checkout (globs)
+  - .env
+  - .env.*
+  - config/database.yml
+  - config/master.key
+  - config/credentials/*.key
+  - Procfile.dev
+directories: [tmp/pids]          # created in every provisioned checkout
+touch: [tmp/caching-dev.txt]     # touched in every provisioned checkout
+node_modules: link               # link (symlink to the main checkout), copy or skip
+database:
+  development_variable: DATABASE_NAME   # written to .env.development.local
+  test_variable: DATABASE_NAME          # written to .env.test.local
+  template: true                        # clone the main development database (PostgreSQL)
+  template_max_gb: 5                    # larger source databases load the schema instead
+test_command: bin/agent-test-setup      # --level test runs this instead of creating a test database
 ```
 
-## Usage
-
-### Create a worktree
-
-```bash
-git fetch origin
-bin/worktree feature-branch origin/main  # Explicit base required
-```
-
-The base is required: omitting it fails before creating a branch or directory. The exact local
-commit resolved from that reference is recorded; creation does not fetch or change your base branch.
-Worktrees are created under `.worktrees/` in the repository root, including when invoked from a subdirectory.
-
-This creates a new worktree with:
-- Separate databases: `myapp_feature-branch_development` and `myapp_feature-branch_test`
-- Copied configuration files (`.env`, `database.yml`, `Procfile.dev`, credentials)
-- Copied `node_modules`
-- Migrated and seeded databases
-
-### Run commands in the worktree
-
-```bash
-cd .worktrees/feature-branch
-bin/worktree exec -- bundle exec rspec
-bin/worktree exec -- bin/rails db:migrate
-bin/worktree verify
-```
-
-`exec` runs from the Git worktree root, including when called from a subdirectory. It checks the
-recorded branch and base ancestry, verifies Bundler's effective root in a fresh Ruby process, and
-pins `BUNDLE_GEMFILE` to this worktree. It clears inherited Bundler state and Git directory overrides,
-removes other repositories' `bin` directories from PATH, and puts this checkout's `bin` first.
-An explicit `bundle` command uses Bundler's gem executable rather than an inherited project binstub.
-Initialization commands use the same isolated environment.
-
-Direct commands, `bundle exec` commands, and Ruby script invocations reject binstubs that resolve
-into another repository, including symlinks. Arguments are passed directly without shell expansion;
-command exit status is preserved. Use an explicit `sh -c` when shell syntax is intended. This wrapper
-is an execution-context guard, not a sandbox: it does not inspect shell scripts or prevent application
-code from spawning commands elsewhere. Commands run outside the wrapper are not intercepted.
-
-Generated `bin/worktree` launchers are shell scripts that set `BUNDLE_GEMFILE` before starting Ruby,
-so an inherited `RUBYOPT=-rbundler/setup` cannot activate the previous checkout's bundle first.
-Both automatic installation and the Rake installer use the same generator. To replace an existing
-launcher in a project after updating the gem:
-
-```bash
-bundle exec rake worktree:install FORCE=1
-```
-
-Creation replaces the new worktree's launcher with the current generator. Symlinked launchers
-are refused rather than followed. Existing worktrees without recorded metadata cannot use `exec`
-or `verify`; create a managed worktree from an explicit base to use these checks.
-
-### Verify before pushing
-
-Creation stores the base reference, its resolved commit, and the feature branch in the private
-`rails-worktree.json` file under `git rev-parse --git-dir`. It does not add this metadata to tracked
-project files. The recorded commit remains fixed even if the base reference advances.
-
-Creation also installs a pre-push wrapper at Git's configured hook location, including a custom
-`core.hooksPath`. An existing hook is preserved as `pre-push.before-rails-worktree` and runs after
-verification with the same arguments and input. Its exit status is preserved. Repeated installation
-is idempotent; an unexpected existing backup causes an actionable error instead of overwriting it.
-
-In managed worktrees the hook checks the branch, base ancestry, and bundle root, then prints the
-change summary against the recorded base. Non-deletion updates must push the current HEAD; push
-other branches from their own checkout. In checkouts without metadata, the wrapper only runs the
-previous hook. Git hooks are shared by worktrees unless configured otherwise.
-
-A branch mismatch tells you to switch back; a base mismatch tells you to rebase onto the recorded
-base. These checks cannot decide whether you chose the right base or whether a change belongs in
-the feature. Review the printed diff before publishing. Git's `--no-verify` still bypasses hooks.
-
-### Close a worktree
-
-```bash
-bin/worktree --close feature-branch  # From main repo
-bin/worktree --close                 # From within worktree
-```
-
-Drops both databases, removes the directory, deletes the branch, and cleans up git references.
-
-## Database Configuration
-
-The gem uses environment variables for database names:
-
-- `DATABASE_NAME_DEVELOPMENT` - Development database name
-- `DATABASE_NAME_TEST` - Test database name
-
-Your `config/database.yml` should look like:
+`config/database.yml` reads the database name from the configured variable, for example:
 
 ```yaml
 development:
   <<: *default
-  database: <%= ENV.fetch("DATABASE_NAME_DEVELOPMENT", "myapp_development") %>
+  database: <%= ENV.fetch("DATABASE_NAME", "myapp_development") %>
 test:
   <<: *default
-  database: <%= ENV.fetch("DATABASE_NAME_TEST", "myapp_test") %>
+  database: <%= ENV.fetch("DATABASE_NAME", "myapp_test") %>
 ```
 
-The gem automatically:
-1. Sets these variables in the worktree's `.env` file
-2. Updates the worktree's `database.yml` to use them
-3. Creates both development and test databases with unique names
+Database names are `<prefix>_<worktree>_development` and `<prefix>_<worktree>_test`. The prefix comes from
+`config/database.yml` in the main checkout, the worktree name from the directory, with other characters
+replaced by `_`. The names go into `.env.development.local` and `.env.test.local`, which dotenv loads per
+environment and which stay out of git. `database.yml` is copied unchanged.
+
+## Usage
+
+```bash
+git fetch origin
+bin/worktree create feature origin/main                 # full provisioning
+bin/worktree create spike origin/main --level minimal   # shares the main development database
+bin/worktree create feature origin/main --seed          # also run db:seed
+
+# In a checkout another tool created (herdr, claude --worktree, Codex, git worktree add)
+bin/worktree init                     # level from .worktree.yml
+bin/worktree init --level test        # plus the isolated test setup
+bin/worktree init --base origin/main  # also record the base and install the push guard
+bin/worktree init --force             # overwrite copied files with the main checkout's
+
+bin/worktree close feature            # from the main checkout
+bin/worktree close                    # from inside the worktree
+```
+
+The base for `create` is required and the resolved commit is recorded; creation does not fetch or change
+your base branch. If the template clone cannot run, because the main development database is in use or larger
+than `template_max_gb`, `init` creates the database and loads the schema instead and says so.
+
+`close` drops only databases named in the worktree's `.env.development.local` and `.env.test.local`.
+A `minimal` checkout shares the main databases and they stay untouched.
+
+## Verified execution
+
+```bash
+cd .worktrees/feature
+bin/worktree exec -- bundle exec rspec
+bin/worktree verify
+```
+
+`exec` runs from the worktree root with `BUNDLE_GEMFILE` pinned to this checkout, clears inherited Bundler
+state and Git directory overrides, removes other repositories' `bin` directories from PATH and puts this
+checkout's `bin` first. It rejects binstubs that resolve into another repository. It needs the metadata
+that `create` or `init --base` records in the private `rails-worktree.json` under `git rev-parse --git-dir`;
+checkouts without it skip the guard.
+
+`create` and `init --base` also install a pre-push wrapper at Git's configured hook location. An existing
+hook is preserved as `pre-push.before-rails-worktree` and runs after verification. In managed worktrees the
+hook checks the branch, base ancestry and bundle root, then prints the change summary against the recorded
+base. Git's `--no-verify` still bypasses hooks.
 
 ## Requirements
 
-- Ruby >= 2.6.0
-- Rails project with standard structure
-- PostgreSQL (or modify for your database)
+- Ruby >= 3.0
+- Rails project with `bin/rails` and dotenv (for the per-environment `.env.*.local` files)
+- PostgreSQL for template cloning; other databases fall back to `db:create` and `db:schema:load`
 
 ## License
 

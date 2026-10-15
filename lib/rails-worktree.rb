@@ -3,6 +3,8 @@ module RailsWorktree
 end
 
 require_relative "worktree/version"
+require_relative "worktree/config"
+require_relative "worktree/managed_block"
 require_relative "worktree/context"
 require_relative "worktree/launcher"
 require_relative "worktree/installer"

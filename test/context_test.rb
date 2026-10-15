@@ -103,9 +103,10 @@ class ContextTest < Minitest::Test
     git(@main, "add", "unrelated")
     git(@main, "commit", "--quiet", "-m", "unrelated")
     File.delete(File.join(@main, ".gitignore"))
-    Dir.chdir(File.join(@main, "bin")) { RailsWorktree::Commands::Create.new(["new-feature", @base]).run }
+    File.write(File.join(@main, ".env"), "SECRET=1\n")
+    Dir.chdir(File.join(@main, "bin")) { capture_io { RailsWorktree::Commands::Create.new(["new-feature", @base]).run } }
     created = RailsWorktree::Context.new(File.join(@main, ".worktrees/new-feature"))
-    assert_equal File.join(created.root, "Gemfile"), File.read(File.join(created.root, "setup-context")).strip
+    assert_equal "SECRET=1\n", File.read(File.join(created.root, ".env"))
     assert_equal @base, created.verify.fetch("commit")
     assert_equal @base, git(created.root, "rev-parse", "HEAD").strip
     refute File.exist?(File.join(created.root, "unrelated"))
