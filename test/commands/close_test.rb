@@ -93,7 +93,49 @@ class CloseTest < Minitest::Test
     Dir.chdir(@main) { assert_raises(RailsWorktree::Error) { RailsWorktree::Commands::Close.new(["missing"]).run } }
   end
 
+  def test_close_by_name_from_the_worktrees_directory_removes_only_that_worktree
+    sibling = add_worktree("sibling")
+
+    Dir.chdir(File.join(@main, ".worktrees")) { capture_io { RailsWorktree::Commands::Close.new(["feature-x"]).run } }
+
+    refute Dir.exist?(@worktree)
+    assert Dir.exist?(sibling)
+    assert_includes git(@main, "worktree", "list"), "sibling"
+  end
+
+  def test_close_without_a_name_outside_a_worktree_deletes_nothing
+    sibling = add_worktree("sibling")
+
+    Dir.chdir(File.join(@main, ".worktrees")) { assert_raises(RailsWorktree::Error) { RailsWorktree::Commands::Close.new([]).run } }
+
+    assert Dir.exist?(@worktree)
+    assert Dir.exist?(sibling)
+  end
+
+  def test_close_without_a_name_from_a_subdirectory_closes_the_enclosing_worktree
+    FileUtils.mkdir_p(File.join(@worktree, "app"))
+
+    Dir.chdir(File.join(@worktree, "app")) { capture_io { RailsWorktree::Commands::Close.new([]).run } }
+
+    refute Dir.exist?(@worktree)
+  end
+
+  def test_close_by_name_from_another_worktree_closes_the_named_one
+    sibling = add_worktree("sibling")
+
+    Dir.chdir(@worktree) { capture_io { RailsWorktree::Commands::Close.new(["sibling"]).run } }
+
+    refute Dir.exist?(sibling)
+    assert Dir.exist?(@worktree)
+  end
+
   private
+
+  def add_worktree(name)
+    path = File.join(@main, ".worktrees", name)
+    git(@main, "worktree", "add", "--quiet", "-b", name, path, "main")
+    path
+  end
 
   def build_close
     close = Dir.chdir(@worktree) { RailsWorktree::Commands::Close.new([]) }

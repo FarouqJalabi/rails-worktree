@@ -1,4 +1,5 @@
 require "fileutils"
+require "open3"
 
 module RailsWorktree
   module Commands
@@ -7,8 +8,9 @@ module RailsWorktree
     class Close
       def initialize(args)
         @worktree_name = args[0]
+        @named = !@worktree_name.nil?
         @main_worktree = get_main_worktree
-        @current_dir = Dir.pwd
+        @current_dir = current_checkout
       end
 
       def run
@@ -23,7 +25,7 @@ module RailsWorktree
         remove_node_modules
 
         # Move to main worktree so we're not inside the directory we're about to delete
-        Dir.chdir(@main_worktree) unless @in_main_repo
+        Dir.chdir(@main_worktree)
         remove_worktree
         prune_worktrees
         delete_branch
@@ -33,7 +35,7 @@ module RailsWorktree
         puts "  Worktree removed from #{@worktree_path}"
         puts "  Branch #{@branch} deleted" if @branch_deleted
 
-        unless @in_main_repo
+        if @worktree_path == @current_dir
           puts ""
           puts "Run: cd #{@main_worktree}"
         end
@@ -55,25 +57,34 @@ module RailsWorktree
         end
       end
 
+      # The checkout that contains the working directory, so a subdirectory such
+      # as .worktrees/ or app/ resolves to its checkout instead of being closed itself.
+      def current_checkout
+        output, status = Open3.capture2(Context::GIT_ENVIRONMENT, "git", "rev-parse", "--show-toplevel")
+        status.success? ? output.strip : Dir.pwd
+      end
+
       # Finds the checkout in git's worktree list by directory name or branch, so
       # worktrees outside .worktrees/ (git worktree add, herdr, Claude Code) close too.
+      # Only a path from that list is ever removed.
       def detect_paths
         @in_main_repo = @current_dir == @main_worktree
         entries = worktree_entries.reject { |entry| entry[:path] == @main_worktree }
-        entry = if @in_main_repo
+        entry = if @named
           entries.find { |candidate| candidate[:path] == File.join(@main_worktree, ".worktrees", @worktree_name) } ||
             entries.find { |candidate| File.basename(candidate[:path]) == @worktree_name || candidate[:branch] == @worktree_name }
         else
           entries.find { |candidate| candidate[:path] == @current_dir }
         end
-        raise Error, "No worktree named #{@worktree_name}; see git worktree list." if @in_main_repo && !entry
+        raise Error, "No worktree named #{@worktree_name}; see git worktree list." unless entry
 
-        @worktree_path = entry ? entry[:path] : @current_dir
-        @branch = entry ? entry[:branch] : @worktree_name
+        @worktree_path = entry[:path]
+        @branch = entry[:branch]
       end
 
       def worktree_entries
-        `git worktree list --porcelain`.split("\n\n").map do |block|
+        output, _status = Open3.capture2(Context::GIT_ENVIRONMENT, "git", "-C", @main_worktree, "worktree", "list", "--porcelain")
+        output.split("\n\n").map do |block|
           lines = block.lines.map(&:strip)
           path = lines.find { |line| line.start_with?("worktree ") }&.delete_prefix("worktree ")
           branch = lines.find { |line| line.start_with?("branch ") }&.delete_prefix("branch refs/heads/")

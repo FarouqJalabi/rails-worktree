@@ -13,6 +13,10 @@
   `db:schema:load`.
 - `close NAME` from the main checkout finds worktrees outside `.worktrees/` by directory or branch name,
   fails for unknown names instead of reporting success, and deletes the worktree's actual branch.
+- `close` no longer deletes the directory it runs from when that directory is not a linked worktree.
+  Running `close NAME` from `.worktrees/` removed the whole `.worktrees/` directory with every
+  worktree in it. `close` now resolves the working directory to its checkout, finds `NAME` from any
+  directory, and removes only paths from `git worktree list`.
 - The pre-push hook is no longer written into a directory that Git tracks (a `core.hooksPath` such as
   `script/hooks`), where it showed up as an untracked file and could move a tracked hook aside. `create`
   and `init --base` print how to call `bin/worktree verify --push` from the project's own hook instead,
