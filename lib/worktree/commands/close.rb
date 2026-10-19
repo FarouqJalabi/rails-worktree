@@ -1,5 +1,4 @@
 require "fileutils"
-require "open3"
 
 module RailsWorktree
   module Commands
@@ -8,9 +7,8 @@ module RailsWorktree
     class Close
       def initialize(args)
         @worktree_name = args[0]
-        @named = !@worktree_name.nil?
         @main_worktree = get_main_worktree
-        @current_dir = current_checkout
+        @current_dir = Dir.pwd
       end
 
       def run
@@ -25,7 +23,7 @@ module RailsWorktree
         remove_node_modules
 
         # Move to main worktree so we're not inside the directory we're about to delete
-        Dir.chdir(@main_worktree)
+        Dir.chdir(@main_worktree) unless @in_main_repo
         remove_worktree
         prune_worktrees
         delete_branch
@@ -35,7 +33,7 @@ module RailsWorktree
         puts "  Worktree removed from #{@worktree_path}"
         puts "  Branch #{@branch} deleted" if @branch_deleted
 
-        if @worktree_path == @current_dir
+        unless @in_main_repo
           puts ""
           puts "Run: cd #{@main_worktree}"
         end
@@ -57,34 +55,25 @@ module RailsWorktree
         end
       end
 
-      # The checkout that contains the working directory, so a subdirectory such
-      # as .worktrees/ or app/ resolves to its checkout instead of being closed itself.
-      def current_checkout
-        output, status = Open3.capture2(Context::GIT_ENVIRONMENT, "git", "rev-parse", "--show-toplevel")
-        status.success? ? output.strip : Dir.pwd
-      end
-
       # Finds the checkout in git's worktree list by directory name or branch, so
       # worktrees outside .worktrees/ (git worktree add, herdr, Claude Code) close too.
-      # Only a path from that list is ever removed.
       def detect_paths
         @in_main_repo = @current_dir == @main_worktree
         entries = worktree_entries.reject { |entry| entry[:path] == @main_worktree }
-        entry = if @named
+        entry = if @in_main_repo
           entries.find { |candidate| candidate[:path] == File.join(@main_worktree, ".worktrees", @worktree_name) } ||
             entries.find { |candidate| File.basename(candidate[:path]) == @worktree_name || candidate[:branch] == @worktree_name }
         else
           entries.find { |candidate| candidate[:path] == @current_dir }
         end
-        raise Error, "No worktree named #{@worktree_name}; see git worktree list." unless entry
+        raise Error, "No worktree named #{@worktree_name}; see git worktree list." if @in_main_repo && !entry
 
-        @worktree_path = entry[:path]
-        @branch = entry[:branch]
+        @worktree_path = entry ? entry[:path] : @current_dir
+        @branch = entry ? entry[:branch] : @worktree_name
       end
 
       def worktree_entries
-        output, _status = Open3.capture2(Context::GIT_ENVIRONMENT, "git", "-C", @main_worktree, "worktree", "list", "--porcelain")
-        output.split("\n\n").map do |block|
+        `git worktree list --porcelain`.split("\n\n").map do |block|
           lines = block.lines.map(&:strip)
           path = lines.find { |line| line.start_with?("worktree ") }&.delete_prefix("worktree ")
           branch = lines.find { |line| line.start_with?("branch ") }&.delete_prefix("branch refs/heads/")
@@ -137,10 +126,14 @@ module RailsWorktree
         FileUtils.rm_rf(node_modules_path)
       end
 
+      # Deletes a directory by hand only when git lists it as a linked worktree, so
+      # closing from a plain directory such as .worktrees/ never removes it.
       def remove_worktree
         puts "Removing worktree..."
         if system(Context::GIT_ENVIRONMENT, "git", "worktree", "remove", "--force", @worktree_path, err: File::NULL)
           puts "Worktree removed successfully via git"
+        elsif worktree_entries.none? { |entry| entry[:path] == @worktree_path && entry[:path] != @main_worktree }
+          raise Error, "#{@worktree_path} is not a linked worktree; nothing removed. See git worktree list."
         elsif Dir.exist?(@worktree_path)
           puts "Git worktree remove failed, deleting directory manually..."
           FileUtils.rm_rf(@worktree_path)
